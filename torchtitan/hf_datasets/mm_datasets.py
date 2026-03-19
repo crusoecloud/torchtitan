@@ -4,10 +4,62 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Multimodal dataset implementation for Qwen3-VL training.
+"""Multimodal dataset and dataloader for VLM training.
 
-This module provides dataset classes for handling multimodal data
-including images, videos, and text for Qwen3-VL model training.
+Workflow overview::
+
+    HuggingFace Dataset (streaming)
+            │
+            ▼
+    ┌───────────────────────────────────────────────────────┐
+    │  Sample Processor  (per-sample, in Dataset.__iter__)  │
+    │                                                       │
+    │  1. Parse raw sample (dataset-specific format)        │
+    │     e.g. OBELICS interleaved text/images,             │
+    │          CC12M text-image pairs,                      │
+    │          Nemotron video QA messages                   │
+    │                                                       │
+    │  2. Process vision: decode image/video bytes,         │
+    │     resize to multiples of (patch_size * merge_size), │
+    │     normalize with image_mean/std                     │
+    │     → pixel_values: list[Tensor(T,H,W,C)]            │
+    │                                                       │
+    │  3. Process text: insert vision placeholder tokens    │
+    │     <|vision_start|><|image_pad|>...<|vision_end|>    │
+    │     into text, then tokenize                          │
+    │     → input_ids: Tensor(seq_len,)                     │
+    │     → labels: same as input_ids, with vision tokens   │
+    │       masked to ignore_id (-100)                      │
+    └───────────────────────────────────────────────────────┘
+            │
+            ▼  (optional, if packing_buffer_size > 0)
+    ┌───────────────────────────────────────────────────────┐
+    │  Sample Packer                                        │
+    │  Bin-pack short samples into seq_len-length sequences │
+    │  to reduce padding waste                              │
+    └───────────────────────────────────────────────────────┘
+            │
+            ▼  DataLoader batches samples (batch_size)
+    ┌───────────────────────────────────────────────────────┐
+    │  Collator  (MultiModalCollatorNLD)                    │
+    │                                                       │
+    │  1. collate_images: for each image Tensor(T,H,W,C),  │
+    │     reshape into patches (num_patches, patch_dim),    │
+    │     pad all images to same num_patches                │
+    │     → pixel_values: (N, max_patches, patch_dim)       │
+    │     → grid_thw: (N, 3) per-image [T, H', W'] dims    │
+    │     (same for videos)                                 │
+    │                                                       │
+    │  2. collate_text: pad input_ids/labels across batch   │
+    │     to seq_len, pad batch to target batch_size        │
+    │     → input_ids: (batch_size, seq_len)                │
+    │     → labels: (batch_size, seq_len)                   │
+    └───────────────────────────────────────────────────────┘
+            │
+            ▼
+    Model receives: {input_ids, pixel_values, grid_thw,
+                     pixel_values_videos, grid_thw_videos,
+                     special_tokens}, labels
 """
 
 import inspect
@@ -27,17 +79,12 @@ from torchtitan.components.tokenizer import BaseTokenizer, HuggingFaceTokenizer
 from torchtitan.hf_datasets import DatasetConfig
 from torchtitan.tools.logging import logger
 
-from ..model import SpecialTokens
+from torchtitan.hf_datasets import SpecialTokens
 from .mm_collator_nld import MultiModalCollatorNLD
-from .utils.image import calculate_image_tokens, process_image
-from .utils.packing import SamplePacker
+from .utils.image import calculate_vision_tokens, process_image, smart_resize
+from .utils.packing import MMSamplePacker
 from .utils.text import process_text_with_images, process_text_with_videos
-from .utils.video import (
-    calculate_video_tokens,
-    load_video,
-    process_video,
-    smart_resize_video,
-)
+from .utils.video import load_video, process_video
 
 
 def _process_mm_sample(
@@ -104,10 +151,13 @@ def _process_mm_sample(
                 if processed_img is not None:
                     # Each (patch_size x temporal_patch_size) x (patch_size x temporal_patch_size)
                     # square block of pixels is mapped to one image token
-                    num_tokens, tokens_per_row, num_rows = calculate_image_tokens(
-                        processed_img,
+                    num_tokens, tokens_per_row, num_rows = calculate_vision_tokens(
+                        num_frames=1,
+                        height=processed_img.shape[1],
+                        width=processed_img.shape[2],
                         patch_size=patch_size,
                         spatial_merge_size=spatial_merge_size,
+                        temporal_patch_size=1,
                     )
                     processed_images.append(processed_img)
                     image_dimensions.append((num_tokens, tokens_per_row, num_rows))
@@ -282,16 +332,16 @@ def _process_nemotron_video_sample(
             est_frames = min(est_frames, src_frames)
 
             factor = patch_size * spatial_merge_size
-            est_h, est_w = smart_resize_video(
-                num_frames=est_frames,
-                height=metadata.get("video_height", 360),
-                width=metadata.get("video_width", 640),
-                temporal_factor=temporal_patch_size,
+            est_h, est_w = smart_resize(
+                metadata.get("video_height", 360),
+                metadata.get("video_width", 640),
                 factor=factor,
                 min_pixels=min_pixels,
                 max_pixels=max_pixels,
+                num_frames=est_frames,
+                temporal_factor=temporal_patch_size,
             )
-            est_tokens, _, _ = calculate_video_tokens(
+            est_tokens, _, _ = calculate_vision_tokens(
                 num_frames=est_frames,
                 height=est_h,
                 width=est_w,
@@ -340,7 +390,7 @@ def _process_nemotron_video_sample(
 
         # Calculate video token count
         T, H, W, _C = processed_video.shape
-        num_tokens, tokens_per_row, num_rows = calculate_video_tokens(
+        num_tokens, tokens_per_row, num_rows = calculate_vision_tokens(
             num_frames=T,
             height=H,
             width=W,
@@ -490,7 +540,7 @@ class HuggingFaceMultiModalDataset(IterableDataset, Stateful):
         self.video_max_frames = video_max_frames
         self.enable_packing = packing_buffer_size > 0
         if self.enable_packing:
-            self.packer = SamplePacker(
+            self.packer = MMSamplePacker(
                 max_seq_length=seq_len,
                 buffer_size=packing_buffer_size,
                 batch_size=batch_size,

@@ -44,16 +44,17 @@ from torchtitan.distributed.expert_parallel import (
     TensorParallel,
     TorchAOExpertParallel,
 )
-from torchtitan.distributed.fsdp import get_fsdp_reshard_after_forward_policy
+from torchtitan.distributed.fsdp import (
+    disable_fsdp_gradient_division,
+    get_fsdp_reshard_after_forward_policy,
+)
 from torchtitan.distributed.tensor_parallel import (
     ColwiseParallelWithGradPlacement,
     maybe_enable_async_tp,
     NoParallel,
 )
-from torchtitan.models.llama3.parallelize import (
-    apply_replicate,
-    disable_fsdp_gradient_division,
-)
+from torchtitan.models.common.moe import moe as moe_module
+from torchtitan.models.llama3.parallelize import apply_replicate
 from torchtitan.models.llama4.model import Llama4Model
 from torchtitan.protocols.model_converter import ModelConvertersContainer
 from torchtitan.tools.logging import logger
@@ -190,7 +191,6 @@ def parallelize_llama(
             reshard_after_forward_policy=parallelism.fsdp_reshard_after_forward,
             ep_degree=parallel_dims.ep,
             edp_mesh=edp_mesh,
-            gradient_divide_factor=parallel_dims.fsdp_gradient_divide_factor,
         )
 
         if parallel_dims.dp_replicate_enabled:
@@ -325,7 +325,6 @@ def apply_fsdp(
     reshard_after_forward_policy: str = "default",
     ep_degree: int = 1,
     edp_mesh: DeviceMesh | None = None,
-    gradient_divide_factor: int | None = None,
 ):
     """
     Apply data parallelism (via FSDP2) to the model.

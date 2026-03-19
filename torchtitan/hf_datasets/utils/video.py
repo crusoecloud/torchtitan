@@ -6,11 +6,10 @@
 
 """Video processing utilities for Qwen3-VL datasets."""
 
-import math
-
 import numpy as np
 import torch
 
+from torchtitan.hf_datasets.utils.image import smart_resize
 from torchtitan.tools.logging import logger
 
 
@@ -93,63 +92,6 @@ def load_video(
         return None
 
 
-def smart_resize_video(
-    num_frames: int,
-    height: int,
-    width: int,
-    temporal_factor: int,
-    factor: int,
-    min_pixels: int,
-    max_pixels: int,
-) -> tuple[int, int]:
-    """Compute target spatial dimensions for video frames.
-
-    Rounds spatial dims to multiples of ``factor`` (patch_size * merge_size)
-    and scales down if the total pixel budget (T * H * W) is exceeded.
-
-    Args:
-        num_frames: Number of sampled frames (T).
-        height: Original frame height.
-        width: Original frame width.
-        temporal_factor: Temporal patch size for rounding T.
-        factor: Spatial factor (patch_size * merge_size).
-        min_pixels: Minimum spatial pixels per frame.
-        max_pixels: Maximum total pixels (T * H * W budget).
-
-    Returns:
-        (resized_height, resized_width)
-    """
-    # Round temporal dim
-    t = max(1, round(num_frames / temporal_factor)) * temporal_factor
-
-    # Round spatial dims to nearest factor
-    h_bar = round(height / factor) * factor
-    w_bar = round(width / factor) * factor
-
-    # Ensure minimum spatial size
-    h_bar = max(h_bar, factor)
-    w_bar = max(w_bar, factor)
-
-    # Scale up if below minimum spatial pixels (before max budget check)
-    spatial_pixels = h_bar * w_bar
-    if spatial_pixels < min_pixels:
-        beta = math.sqrt(min_pixels / spatial_pixels)
-        h_bar = math.ceil(height * beta / factor) * factor
-        w_bar = math.ceil(width * beta / factor) * factor
-
-    # Scale down if total pixels exceed budget (this takes priority)
-    total_pixels = t * h_bar * w_bar
-    if total_pixels > max_pixels:
-        max_spatial = max_pixels / t
-        beta = math.sqrt((h_bar * w_bar) / max_spatial)
-        h_bar = math.floor(height / beta / factor) * factor
-        w_bar = math.floor(width / beta / factor) * factor
-        h_bar = max(h_bar, factor)
-        w_bar = max(w_bar, factor)
-
-    return h_bar, w_bar
-
-
 def process_video(
     video: torch.Tensor,
     patch_size: int,
@@ -182,14 +124,14 @@ def process_video(
         T, H, W, C = video.shape
         factor = patch_size * merge_size
 
-        target_h, target_w = smart_resize_video(
-            num_frames=T,
-            height=H,
-            width=W,
-            temporal_factor=temporal_patch_size,
+        target_h, target_w = smart_resize(
+            H,
+            W,
             factor=factor,
             min_pixels=min_pixels,
             max_pixels=max_pixels,
+            num_frames=T,
+            temporal_factor=temporal_patch_size,
         )
 
         # Resize frames: torchvision F.resize expects (..., H, W) format
@@ -214,30 +156,3 @@ def process_video(
         return None
 
 
-def calculate_video_tokens(
-    num_frames: int,
-    height: int,
-    width: int,
-    patch_size: int,
-    spatial_merge_size: int,
-    temporal_patch_size: int,
-) -> tuple[int, int, int]:
-    """Calculate number of tokens needed for a video.
-
-    Args:
-        num_frames: Number of frames (T).
-        height: Frame height (H).
-        width: Frame width (W).
-        patch_size: Spatial patch size.
-        spatial_merge_size: Spatial merge factor.
-        temporal_patch_size: Temporal patch size.
-
-    Returns:
-        (total_tokens, tokens_per_row, num_rows) where total_tokens
-        includes the temporal dimension.
-    """
-    t_patches = math.ceil(num_frames / temporal_patch_size)
-    h_merged = height // (patch_size * spatial_merge_size)
-    w_merged = width // (patch_size * spatial_merge_size)
-    total_tokens = t_patches * h_merged * w_merged
-    return total_tokens, w_merged, h_merged

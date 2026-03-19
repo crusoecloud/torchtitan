@@ -14,9 +14,9 @@ from torch.nn.utils.rnn import pad_sequence
 
 from torchtitan.tools.logging import logger
 
-from ..model import SpecialTokens
+from torchtitan.hf_datasets import SpecialTokens
 
-from .utils.image import image_to_patches
+from .utils.image import vision_to_patches
 from .utils.text import pad_input_ids_and_labels_to_target_batch_size, pad_text_batch
 
 
@@ -50,10 +50,10 @@ class MultiModalCollatorNLD:
     def collate_images(
         self, all_images: list[torch.Tensor]
     ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
-        """Process a list of image tensors into padded patches with grid dimensions.
+        """Process a list of image/video tensors into padded patches with grid dimensions.
 
         Args:
-            all_images: list of image tensors, each of shape (T, H, W, C)
+            all_images: list of image/video tensors, each of shape (T, H, W, C)
 
         Returns:
             pixel_values: Padded patches (num_images, max_num_patch, patch_dim) or None
@@ -63,7 +63,7 @@ class MultiModalCollatorNLD:
             return None, None
 
         results = [
-            image_to_patches(
+            vision_to_patches(
                 img, self.patch_size, self.temporal_patch_size, self.spatial_merge_size
             )
             for img in all_images

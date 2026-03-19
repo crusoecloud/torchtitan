@@ -12,7 +12,7 @@ from typing import Any
 import torch
 
 
-class SamplePacker:
+class MMSamplePacker:
     """Packs multiple samples together to maximize sequence length utilization.
 
     Samples are accumulated in a buffer. When the buffer reaches buffer_size,
