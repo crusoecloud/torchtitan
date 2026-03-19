@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 from torch.distributed.device_mesh import DeviceMesh
+from torch.distributed.fsdp import MixedPrecisionPolicy
 from torch.fx.traceback import annotate_fn
 
 from torchtitan.components.quantization.float8 import find_float8_linear_config
@@ -26,10 +27,8 @@ from torchtitan.experiments.graph_trainer.compile import apply_compile
 from torchtitan.experiments.graph_trainer.deepseek_v3.model import (
     GraphTrainerDeepSeekV3Model,
 )
-from torchtitan.experiments.graph_trainer.simple_fsdp import (
-    data_parallel,
-    MixedPrecisionPolicy,
-)
+
+from torchtitan.experiments.graph_trainer.simple_fsdp import data_parallel
 from torchtitan.models.deepseek_v3.parallelize import apply_moe_ep_tp, apply_non_moe_tp
 from torchtitan.protocols.model_converter import ModelConvertersContainer
 from torchtitan.tools.logging import logger
@@ -80,6 +79,13 @@ def parallelize_deepseekv3(
     ac_config: ActivationCheckpointConfig,
     dump_folder: str,
 ):
+    """
+    Apply annotation, parallelization, activation checkpointing, and full graph
+    capture to the model.
+
+    NOTE: The passed-in model preferably should be on meta device. Otherwise,
+    the model must fit on GPU or CPU memory.
+    """
     # TODO: TP currently cannot handle uneven seq_len because we set
     #       `use_local_output=True` to use plain Tensors for legacy reasons.
     #       Need to revisit this.

@@ -7,11 +7,9 @@
 import sys
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
-
 from torch.distributed._tensor import (
     distribute_tensor,
     DTensor,
@@ -20,6 +18,7 @@ from torch.distributed._tensor import (
     Shard,
 )
 from torch.distributed.device_mesh import DeviceMesh
+from torch.distributed.fsdp import MixedPrecisionPolicy
 from torch.distributed.tensor._dtensor_spec import DTensorSpec
 from torch.distributed.tensor._redistribute import redistribute_local_tensor
 from torch.distributed.tensor.placement_types import _StridedShard, Placement
@@ -37,12 +36,6 @@ def disable_active_parametrization() -> Generator[None, None, None]:
         yield
     finally:
         _active_parametrization = True
-
-
-@dataclass(frozen=True)
-class MixedPrecisionPolicy:
-    param_dtype: torch.dtype | None = None
-    reduce_dtype: torch.dtype | None = None
 
 
 def _distribute_dtensor(
@@ -131,7 +124,9 @@ _wrap_class_counter = 0  # Not thread-safe; assumes single-threaded model init
 
 
 def _register_parametrization(
-    module: nn.Module, param_names: list[str], parametrization: nn.Module
+    module: nn.Module,
+    param_names: list[str],
+    parametrization: nn.Module,
 ) -> None:
     """
     It works with state_dict without incurring parametrization calls because

@@ -34,7 +34,11 @@ class FwdBwdStepModule(nn.Module):
     def forward(self, inputs, labels, global_valid_tokens, extra_inputs, extra_kwargs):
         pred = self.model(inputs, **extra_inputs, **extra_kwargs)
         loss = self.loss_fn(pred, labels) / global_valid_tokens
-        params = [p for p in self.model.parameters() if p.requires_grad]
+        params = [
+            p
+            for _, p in self.model.named_parameters(remove_duplicate=False)
+            if p.requires_grad
+        ]
         grads = torch.autograd.grad(loss, params)
         return [loss] + list(grads)
 
@@ -79,7 +83,11 @@ class GraphTrainer(Trainer):
             input_dict, labels
         )
 
-        params = [p for p in model.parameters() if p.requires_grad]
+        params = [
+            p
+            for _, p in model.named_parameters(remove_duplicate=False)
+            if p.requires_grad
+        ]
         return self._make_fx_forward_backward_step(
             model,
             inputs,
