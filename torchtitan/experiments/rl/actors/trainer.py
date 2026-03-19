@@ -21,7 +21,7 @@ from torch.distributed.checkpoint.state_dict import (
 from torchtitan.components.lr_scheduler import LRSchedulersContainer
 from torchtitan.components.optimizer import OptimizersContainer
 from torchtitan.config import CommConfig, Configurable, TORCH_DTYPE_MAP
-from torchtitan.config.configs import CompileConfig, ParallelismConfig, TrainingConfig
+from torchtitan.config.configs import CompileConfig, DebugConfig, ParallelismConfig, TrainingConfig
 from torchtitan.distributed import ParallelDims, utils as dist_utils
 from torchtitan.experiments.rl.actors.utils import (
     compute_policy_gradient_loss,
@@ -71,6 +71,8 @@ class PolicyTrainer(Actor, Configurable):
         batch_invariant_mode: bool,
         hf_assets_path: str = "",
         transfer_dtype: str = "",
+        seed: int = 42,
+        deterministic: bool = False,
     ):
         self.config = config
         self.model_spec = model_spec
@@ -86,6 +88,17 @@ class PolicyTrainer(Actor, Configurable):
         # is not enough; 16 accommodates both without recompile storms.
         # TODO: @Lucaskabela fix recompiles in general as these increase startup
         torch._dynamo.config.cache_size_limit = 16
+        # Set NCCL env vars for deterministic inter-GPU collectives (all-reduce
+        # in TP/DP). Must be set BEFORE init_distributed so NCCL picks them up.
+        # Without these, NCCL may use Tree/CollNet algorithms or multiple
+        # channels, changing the floating-point summation order between runs.
+        if deterministic:
+            os.environ["NCCL_ALGO"] = "Ring"  # Fixed reduction topology
+            os.environ["NCCL_MIN_NCHANNELS"] = "1"  # Single channel to fix
+            os.environ["NCCL_MAX_NCHANNELS"] = "1"  # reduction order
+            os.environ["NCCL_PROTO"] = "Simple"  # Deterministic protocol
+            os.environ["NCCL_COLLNET_ENABLE"] = "0"  # Disable CollNet
+            os.environ["NCCL_NVLS_ENABLE"] = "0"  # Disable NVLink SHARP
 
         # Device setup
         device_module, device_type = utils.device_module, utils.device_type
@@ -106,6 +119,30 @@ class PolicyTrainer(Actor, Configurable):
             etp=parallelism_config.expert_tensor_parallel_degree,
             world_size=world_size,
         )
+
+        # Enable deterministic mode: seeding, deterministic algorithms, TF32 disable
+        if deterministic:
+            debug_config = DebugConfig(seed=seed, deterministic=True)
+            dist_utils.set_determinism(
+                self.parallel_dims,
+                self.device,
+                debug_config,
+                distinct_seed_mesh_dims=[],
+            )
+            # Disable TF32: TF32 truncates fp32 inputs to 19 bits before
+            # multiplying, which can round differently depending on batch
+            # composition. Our Triton kernels bypass cuBLAS, but we disable
+            # TF32 as a safety net for any ops that fall through to cuBLAS/cuDNN.
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
+
+        # Enable batch-invariant Triton kernels for deterministic matmul/softmax/mean
+        if deterministic:
+            from torchtitan.experiments.rl.batch_invariant import (
+                enable_batch_invariant_mode,
+            )
+
+            enable_batch_invariant_mode()
 
         # Initialize state dict adapter for HF checkpoint loading
         if model_spec.state_dict_adapter is not None:
@@ -322,6 +359,32 @@ class PolicyTrainer(Actor, Configurable):
             my_token_log_probs,
             batch_token_log_probs,
         )
+
+        # --- DEBUG: Detailed logprob comparison for first sample ---
+        debug_info = {}
+        if my_token_log_probs and batch_token_log_probs:
+            gen_lps = torch.tensor(my_token_log_probs[0], dtype=torch.float32)
+            train_lps = batch_token_log_probs[0].detach().cpu().float()
+            delta = (gen_lps - train_lps).abs()
+            max_idx = delta.argmax().item()
+            n_show = min(5, len(gen_lps))
+            debug_info = {
+                "dbg_prompt_len": len(my_prompt_token_ids[0]),
+                "dbg_gen_len": len(my_token_ids[0]),
+                "dbg_logprob_len_gen": len(my_token_log_probs[0]),
+                "dbg_logprob_len_train": len(batch_token_log_probs[0]),
+                "dbg_gen_lps_first5": str(gen_lps[:n_show].tolist()),
+                "dbg_train_lps_first5": str(train_lps[:n_show].tolist()),
+                "dbg_delta_first5": str(delta[:n_show].tolist()),
+                "dbg_max_delta_idx": max_idx,
+                "dbg_max_delta_gen": gen_lps[max_idx].item(),
+                "dbg_max_delta_train": train_lps[max_idx].item(),
+                "dbg_max_delta_val": delta[max_idx].item(),
+                "dbg_gen_raw_type": str(type(my_token_log_probs[0][0])),
+                "dbg_gen_raw_val": my_token_log_probs[0][0],
+            }
+        # --- END DEBUG ---
+
         logger.debug(
             f"Logprob verification: bitwise_identical={verification_result['logprob_bitwise_identical']}, "
             f"max_delta={verification_result['logprob_max_delta']:.6e}, "
@@ -372,6 +435,7 @@ class PolicyTrainer(Actor, Configurable):
                 "logprob_bitwise_identical"
             ],
             **loss_metrics,
+            **debug_info,
         }
         logger.debug(
             f"{os.getpid()=} PolicyTrainer finished step {self.policy_version}"
