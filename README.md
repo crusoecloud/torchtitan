@@ -59,7 +59,7 @@ We look forward to your contributions!
    - [Pipeline Parallel](https://discuss.pytorch.org/t/distributed-w-torchtitan-training-with-zero-bubble-pipeline-parallelism/214420)
    - [Context Parallel](https://discuss.pytorch.org/t/distributed-w-torchtitan-breaking-barriers-training-long-context-llms-with-1m-sequence-length-in-pytorch-using-context-parallel/215082)
 2. [Meta device](https://pytorch.org/docs/stable/meta.html) initialization
-3. Selective (layer or operator) and full activation checkpointing
+3. Per-op selective and full activation checkpointing
 4. [Distributed checkpointing](https://discuss.pytorch.org/t/distributed-w-torchtitan-optimizing-checkpointing-efficiency-with-pytorch-dcp/211250) (including async checkpointing)
    - [Interoperable checkpoints](docs/checkpoint.md) which can be loaded directly into [`torchtune`](https://github.com/pytorch/torchtune) for fine-tuning
 5. `torch.compile` support
@@ -68,11 +68,11 @@ We look forward to your contributions!
 7. DDP and HSDP
 8. [TorchFT](https://github.com/pytorch/torchft) integration
 9. Checkpointable data-loading, with the C4 dataset pre-configured (144M entries) and support for [custom datasets](docs/datasets.md)
-10. Gradient accumulation, enabled by giving an additional `--training.global_batch_size` argument in configuration
+10. Gradient accumulation, enabled by giving an additional `--training.global_batch_size` argument on the CLI
 11. Flexible learning rate scheduler (warmup-stable-decay)
 12. Loss, GPU memory, throughput (tokens/sec), TFLOPs, and MFU displayed and logged via [Tensorboard or Weights & Biases](/docs/metrics.md)
 13. [Debugging tools](docs/debugging.md) including CPU/GPU profiling, memory profiling, Flight Recorder, etc.
-14. All options easily configured via [toml files](torchtitan/models/llama3/train_configs/)
+14. All options easily configured via [Python config registry](torchtitan/models/llama3/config_registry.py) with `--module` and `--config` CLI flags
 15. [Helper scripts](scripts/) to
     - download tokenizers from Hugging Face
     - convert original Llama 3 checkpoints into the expected DCP format
@@ -85,9 +85,9 @@ We report [performance](benchmarks/llama3_h100_202412_torchtitan.md) on up to 51
 
 You may want to see how the model is defined or how parallelism techniques are applied. For a guided tour, see these files first:
 * [torchtitan/train.py](torchtitan/train.py) - the main training loop and high-level setup code
-* [torchtitan/models/llama3/model/model.py](torchtitan/models/llama3/model/model.py) - the Llama 3.1 model definition
-* [torchtitan/models/llama3/infra/parallelize.py](torchtitan/models/llama3/infra/parallelize.py) - helpers for applying Data Parallel, Tensor Parallel, activation checkpointing, and `torch.compile` to the model
-* [torchtitan/models/llama3/infra/pipeline.py](torchtitan/models/llama3/infra/pipeline.py) - helpers for applying Pipeline Parallel to the model
+* [torchtitan/models/llama3/model.py](torchtitan/models/llama3/model.py) - the Llama 3.1 model definition
+* [torchtitan/models/llama3/parallelize.py](torchtitan/models/llama3/parallelize.py) - helpers for applying Data Parallel, Tensor Parallel, activation checkpointing, and `torch.compile` to the model
+* [torchtitan/distributed/pipeline_parallel.py](torchtitan/distributed/pipeline_parallel.py) - helpers for applying Pipeline Parallel to the model
 * [torchtitan/components/checkpoint.py](torchtitan/components/checkpoint.py) - utils for saving/loading distributed checkpoints
 * [torchtitan/components/quantization/float8.py](torchtitan/components/quantization/float8.py) - utils for applying Float8 techniques
 
@@ -108,11 +108,11 @@ pip install -r requirements.txt
 
 ### Nightly builds
 
-This method requires the nightly build of PyTorch. You can replace `cu126` with another version of cuda (e.g. `cu128`) or an AMD GPU (e.g. `rocm6.3`).
+This method requires the nightly build of PyTorch. You can replace `cu128` with another version of cuda or an AMD GPU (e.g. `rocm6.3`).
 
 ```sh
-pip3 install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu126 --force-reinstall
-pip install --pre torchtitan --index-url https://download.pytorch.org/whl/nightly/cu126
+pip3 install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128 --force-reinstall
+pip install --pre torchtitan --index-url https://download.pytorch.org/whl/nightly/cu128
 ```
 
 ### Stable releases
@@ -142,7 +142,7 @@ python scripts/download_hf_assets.py --repo_id meta-llama/Llama-3.1-8B --assets 
 Llama 3 8B model locally on 8 GPUs
 
 ```bash
-CONFIG_FILE="./torchtitan/models/llama3/train_configs/llama3_8b.toml" ./run_train.sh
+MODULE=llama3 CONFIG=llama3_8b ./run_train.sh
 ```
 
 ### Multi-Node Training
