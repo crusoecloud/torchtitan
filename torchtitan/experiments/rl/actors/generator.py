@@ -20,7 +20,6 @@ from torchtitan.experiments.rl.plugin import (
 )
 from torchtitan.experiments.rl.types import Episode
 from torchtitan.protocols.model_spec import ModelSpec
-from torchtitan.tools.utils import has_cuda_capability
 from vllm import EngineArgs, LLMEngine, SamplingParams
 from vllm.config import AttentionConfig, CompilationConfig
 from vllm.model_executor.layers.batch_invariant import init_batch_invariance
@@ -200,8 +199,9 @@ class VLLMGenerator(Actor, Configurable):
             ),
             disable_log_stats=True,
         )
-        # FA2 requires block_size to be a multiple of 256
-        if not has_cuda_capability(9, 0):
+        # FA3 only supports SM 9.x (Hopper); other architectures fall back
+        # to FA2 which requires block_size to be a multiple of 256.
+        if torch.cuda.get_device_capability()[0] != 9:
             engine_kwargs["block_size"] = 256
         vllm_compilation_config = config.compile.get_vllm_compilation_config()
         if vllm_compilation_config is not None:

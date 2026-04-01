@@ -14,7 +14,6 @@ from torch.nn.attention import (
     current_flash_attention_impl,
 )
 from torchtitan.models.common.attention import LocalMapInnerAttention
-from torchtitan.tools.utils import has_cuda_capability
 from vllm.model_executor.layers.attention import Attention
 from vllm.v1.attention.backend import AttentionType
 from vllm.v1.attention.backends.flash_attn import (
@@ -59,17 +58,22 @@ class PyTorchFlashAttentionImpl(FlashAttentionImpl):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
-        # FA3 requires SM 9.0+ (e.g. H100); check capability explicitly because
-        # activate_flash_attention_impl("FA3") succeeds even on SM80.
+        # FA3 requires SM 9.x (Hopper, e.g. H100/H200); check capability
+        # explicitly because activate_flash_attention_impl("FA3") succeeds
+        # even on unsupported architectures.  SM 10.x (Blackwell) is not yet
+        # supported by the FA3 kernel, so restrict to major == 9.
         # Fall back to FA2 which requires page_size to be a multiple of 256.
-        if has_cuda_capability(9, 0):
+        capability = torch.cuda.get_device_capability()
+        if capability[0] == 9:
             if current_flash_attention_impl() != "FA3":
                 activate_flash_attention_impl("FA3")
             self._use_fa3 = True
         else:
             logger.warning(
-                "FA3 not available (requires SM 9.0+), falling back to FA2. "
-                "vLLM block_size must be set to 256 for FA2 paged attention."
+                "FA3 not available (requires SM 9.x, got %d.%d), falling back "
+                "to FA2. vLLM block_size must be set to 256 for FA2 paged "
+                "attention.",
+                *capability,
             )
             self._use_fa3 = False
 
