@@ -11,6 +11,7 @@
 
 import logging
 
+import torch
 import torch.nn as nn
 
 from torch.distributed.device_mesh import DeviceMesh
@@ -26,10 +27,57 @@ from torch.distributed.tensor.parallel import (
 from torchtitan.config import ParallelismConfig
 from torchtitan.config.configs import CompileConfig
 from torchtitan.distributed import ParallelDims
-from torchtitan.distributed.compile import apply_compile_dense
 from torchtitan.distributed.tensor_parallel import NoParallel
 
 logger = logging.getLogger(__name__)
+
+
+def _apply_compile_with_dynamic_dims(
+    model: nn.Module,
+    compile_config: CompileConfig,
+    dynamic_dims: list[tuple[int, int]],
+) -> None:
+    """Compile each TransformerBlock with specified dynamic dimensions.
+
+    Like ``apply_compile_dense``, but wraps each block's compiled forward with
+    ``mark_dynamic`` on the specified (arg_index, dim) pairs. This avoids
+    recompiles when those dimensions vary between calls (e.g. sequence length
+    in RL training).
+
+    Uses the same wrapper pattern as MoE expert-parallel in
+    ``torchtitan/distributed/compile.py``: ``mark_dynamic`` runs in eager mode,
+    then the compiled forward sees the dynamic marks.
+
+    Args:
+        dynamic_dims: List of (arg_index, dim) tuples. Each entry marks
+            ``args[arg_index]`` dimension ``dim`` as dynamic via
+            ``torch._dynamo.mark_dynamic``, provided the arg exists and
+            is not None.
+    """
+    torch._dynamo.config.skip_fwd_side_effects_in_bwd_under_checkpoint = (
+        True  # pyrefly: ignore [bad-assignment]
+    )
+
+    # pyrefly: ignore [missing-attribute]
+    for layer_id, block in model.layers.named_children():
+        compiled_fwd = torch.compile(
+            block.forward, backend=compile_config.backend, fullgraph=True
+        )
+
+        def _make_dynamic_fwd(cf, dims):
+            def forward(*args, **kwargs):
+                for arg_idx, dim in dims:
+                    if arg_idx < len(args) and args[arg_idx] is not None:
+                        torch._dynamo.mark_dynamic(args[arg_idx], dim)
+                return cf(*args, **kwargs)
+
+            return forward
+
+        block.forward = _make_dynamic_fwd(compiled_fwd, dynamic_dims)
+        # pyrefly: ignore [missing-attribute]
+        model.layers.register_module(layer_id, block)
+
+    logger.info("Compiling each TransformerBlock with dynamic dims")
 
 
 def parallelize_qwen3(
@@ -72,7 +120,29 @@ def parallelize_qwen3(
         and compile_config.enable
         and "model" in compile_config.components
     ):
-        apply_compile_dense(model, compile_config)
+        if parallel_dims.tp_enabled:
+            # Eagerly init local_map on inner_attention so dynamo never sees
+            # the _local_map_fn=None lazy-init branch (avoids a recompile).
+            # Derive qkv placements from the parallelized wq weight:
+            # ColwiseParallel shards the output-features dim (weight dim 0).
+            # After attention reshape [bs, seq, n_heads, head_dim], the sharded
+            # output features map to the n_heads dim (index 2).
+            tp_mesh = parallel_dims.get_mesh("tp")
+            first_block = next(
+                iter(model.layers.values())
+            )  # pyrefly: ignore [not-callable]
+            qkv_placements = tuple(
+                Shard(2) if isinstance(p, Shard) else p
+                for p in first_block.attention.wq.weight.placements
+            )
+            for block in model.layers.values():  # pyrefly: ignore [not-callable]
+                block.attention.inner_attention.init_local_map(qkv_placements, tp_mesh)
+        # Mark seq_len (dim 1) as dynamic on hidden states (arg 0) and
+        # positions (arg 3) to avoid per-episode recompiles from variable
+        # sequence lengths in RL training.
+        _apply_compile_with_dynamic_dims(
+            model, compile_config, dynamic_dims=[(0, 1), (3, 1)]
+        )
 
     return model
 
