@@ -78,6 +78,9 @@ def run_single_test(
 def run_tests(args, test_list: list[OverrideDefinitions], module=None, config=None):
     """Run all integration tests to test the core features of TorchTitan"""
 
+    # test
+    total_start = time.perf_counter()
+
     exclude_set = set()
     if hasattr(args, "exclude") and args.exclude:
         exclude_set = {name.strip() for name in args.exclude.split(",")}
@@ -105,8 +108,19 @@ def run_tests(args, test_list: list[OverrideDefinitions], module=None, config=No
                 f" because --ngpu arg is {args.ngpu}"
             )
         else:
+            # test
+            start = time.perf_counter()
+
             run_single_test(test_flavor, args.output_dir, module, config)
             ran_any_test = True
+
+            # test
+            duration = time.perf_counter() - start
+            print(f"############ Duration for {test_flavor.test_name} test: {total_duration:.6f}s ############")
+
+    # test
+    total_duration = time.perf_counter() - total_start
+    print(f"************ Total duration for Features test: {total_duration:.6f}s ************")
 
     if not ran_any_test:
         available_tests = [t.test_name for t in test_list if not t.disabled]
