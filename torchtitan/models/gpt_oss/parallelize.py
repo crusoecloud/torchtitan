@@ -30,11 +30,7 @@ from torchtitan.distributed import ParallelDims
 from torchtitan.distributed.activation_checkpoint import apply_ac
 from torchtitan.distributed.compile import apply_compile_sparse
 from torchtitan.distributed.context_parallel import apply_cp_to_attention_module
-from torchtitan.distributed.expert_parallel import (
-    ExpertParallel,
-    ReordererSequenceParallel,
-    TorchAOExpertParallel,
-)
+from torchtitan.distributed.expert_parallel import ExpertParallel, TorchAOExpertParallel
 from torchtitan.distributed.tensor_parallel import NoParallel
 from torchtitan.models.gpt_oss.model import GptOssModel
 from torchtitan.models.llama3.parallelize import apply_replicate
@@ -290,11 +286,13 @@ def apply_moe_ep_tp(
                 ),
             }
             if ep_mesh is not None and not etp_enabled:
-                # If TP is borrowed for EP, then split the tokens across TP ranks so that
-                # the reorderer, the all-to-all comms, and routed experts computation
-                # are effectively running Sequence Parallel (split along the folded bs*slen dim)
-                # pyrefly: ignore [no-matching-overload]
-                moe_layer_plan.update({"moe.reorderer": ReordererSequenceParallel()})
+                # ETP=1: EP borrows from TP, requires ReordererSequenceParallel
+                # to split tokens across TP ranks. Not yet supported with
+                # the new token dispatcher.
+                raise NotImplementedError(
+                    "EP>1 with ETP=1 and TP>1 requires ReordererSequenceParallel, "
+                    "which is not yet supported with the new token dispatcher."
+                )
 
             parallelize_module(
                 # pyrefly: ignore [bad-argument-type]
@@ -331,3 +329,19 @@ def apply_moe_ep_tp(
             device_mesh=experts_mesh,
             parallelize_plan=experts_plan,
         )
+
+        # Replace token dispatcher for EP>1
+        if ep_mesh is not None:
+            from torchtitan.models.common.token_dispatcher import TokenDispatcher
+
+            # pyrefly: ignore [missing-attribute]
+            moe = transformer_block.moe
+            moe.experts.token_dispatcher = TokenDispatcher(
+                TokenDispatcher.Config(
+                    num_experts=moe.experts.num_experts,
+                    top_k=moe.router.top_k,
+                    score_before_experts=moe.score_before_experts,
+                    ep_group=ep_mesh.get_group(),
+                    num_local_experts=moe.experts.num_experts // ep_mesh.size(),
+                )
+            )
