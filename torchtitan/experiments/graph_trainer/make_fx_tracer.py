@@ -202,7 +202,8 @@ def _remove_cpu_shadow_chains(gm: torch.fx.GraphModule) -> None:
 
 @contextmanager
 def _patch_engine_run_backward() -> Generator[None, None, None]:
-    """Patch _engine_run_backward to install stacktrace preservation hooks.
+    """Patch _engine_run_backward to install stacktrace preservation hooks and
+    annotate backward nodes for the activation checkpointing remat pass.
 
     Why this is needed:
     When make_fx traces a function that calls loss.backward(), the backward
@@ -218,6 +219,11 @@ def _patch_engine_run_backward() -> Generator[None, None, None]:
     This context manager patches ``_engine_run_backward`` to call
     ``setup_stacktrace_preservation_hooks`` before the autograd engine runs,
     restoring ``seq_nr`` propagation during tracing.
+
+    Additionally, all backward nodes are annotated with
+    ``{"remat_pass_tag": "is_backward"}`` so that
+    ``remat_using_tags_for_fwd_loss_bwd_graph`` can identify the backward
+    region boundary.
 
     We must patch the name in both modules since ``torch.autograd.__init__``
     imports it via ``from .graph import``.
@@ -235,7 +241,9 @@ def _patch_engine_run_backward() -> Generator[None, None, None]:
         ]
         if roots:
             setup_stacktrace_preservation_hooks(roots)
-        return _orig_fn(t_outputs, *args, **kwargs)
+        # TODO: pytorch/pytorch#179105 will remove the need for this tagging
+        with torch.fx.traceback.annotate({"remat_pass_tag": "is_backward"}):
+            return _orig_fn(t_outputs, *args, **kwargs)
 
     torch.autograd.graph._engine_run_backward = _patched  # type: ignore[assignment]
     torch.autograd._engine_run_backward = _patched  # type: ignore[assignment]
@@ -460,6 +468,11 @@ def run_traced(
 
     The module must be the first argument (position 0), matching the
     convention enforced by :func:`minimal_fx_tracer`.
+
+    Runs under ``torch.no_grad()`` because the graph already contains explicit
+    backward ops (from ``torch.autograd.grad`` traced by make_fx). Without
+    this, PyTorch would build a redundant autograd graph on top, keeping all
+    forward intermediates alive via ``grad_fn`` references.
     """
 
     mod = args[0]
@@ -481,7 +494,8 @@ def run_traced(
     all_args = params_flat + list(user_args_flat)
     flat_inputs, _ = _unwrap_subclasses(all_args)
 
-    flat_outputs = traced_result.gm(*flat_inputs)
+    with torch.no_grad():
+        flat_outputs = traced_result.gm(*flat_inputs)
     wrapped = _wrap_subclasses(
         flat_outputs,
         traced_result.num_flat_outputs,

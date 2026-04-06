@@ -11,6 +11,7 @@ import torch
 import torch.nn as nn
 
 from torchtitan.experiments.graph_trainer.common_utils import (
+    annotate_ac_regions,
     register_blockmask_pytree_node,
 )
 from torchtitan.experiments.graph_trainer.configs import GraphTrainerCompileConfig
@@ -104,6 +105,8 @@ class GraphTrainer(Trainer):
     ) -> torch.Tensor:
         if self._traced_step is None:
             fwd_bwd_fn = make_fwd_bwd_step(self.loss_fn)
+            if self.config.activation_checkpoint.mode != "none":
+                annotate_ac_regions(model)
             # Flex attention masks can flow through extra_inputs / extra_kwargs.
             from torch.nn.attention.flex_attention import BlockMask
 
@@ -118,10 +121,10 @@ class GraphTrainer(Trainer):
                     extra_inputs,
                     extra_kwargs,
                 )
-
             self._traced_step.gm = apply_default_graph_passes(
                 self._traced_step.gm,
                 self._traced_step.example_inputs,
+                enable_graph_ac=self.config.activation_checkpoint.mode != "none",
             )
         with self.train_context(), self.maybe_enable_amp:
             outputs = run_traced(

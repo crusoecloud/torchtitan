@@ -41,13 +41,21 @@ from torchtitan.tools.logging import logger
 
 
 def apply_default_graph_passes(
-    gm: torch.fx.GraphModule, example_inputs: tuple
+    gm: torch.fx.GraphModule,
+    example_inputs: tuple,
+    *,
+    enable_graph_ac: bool = False,
 ) -> torch.fx.GraphModule:
     """Entry point for optimizing the traced fwd+bwd graph.
 
     Called by GraphTrainer after tracing to apply graph-level optimization
     passes before execution. Individual passes are defined below.
     """
+    # annotate_ac_regions() only marks transformer block forwards. Unannotated
+    # top-level ops can still appear in the traced graph, so an explicit flag
+    # avoids accidentally treating those nodes as a default AC region.
+    if enable_graph_ac:
+        gm = apply_ac_on_fwd_bwd_graph(gm)
     gm = tlparse_log_graph_pass(gm, example_inputs, graph_name="make_fx_graph_traced")
 
     return gm
@@ -206,6 +214,14 @@ def apply_sac_pass(
         if node.op != "call_function":
             continue
 
+        custom_meta = node.meta.get("custom", {})
+
+        # Skip backward nodes — they must not carry recompute tags,
+        # otherwise the remat pass would try to duplicate backward ops.
+        # TODO: pytorch/pytorch#179105 will remove the need for this tagging
+        if custom_meta.get("remat_pass_tag") == "is_backward":
+            continue
+
         if node.target in (
             operator.getitem,
             torch.ops._c10d_functional.wait_tensor.default,
@@ -223,8 +239,6 @@ def apply_sac_pass(
                 node.meta["recompute"] = parent.meta["recompute"]
                 node.meta["ac_graph_id"] = parent.meta.get("ac_graph_id", 0)
             continue
-
-        custom_meta = node.meta.get("custom", {})
         ac_region_id = custom_meta.get(_AC_REGION_ID, 0)
         node.meta["ac_graph_id"] = ac_region_id
 
@@ -256,6 +270,27 @@ def apply_sac_pass(
             f"{stats['recompute']} nodes annotated with PREFER_RECOMPUTE"
         )
     return gm
+
+
+def apply_ac_on_fwd_bwd_graph(gm: torch.fx.GraphModule) -> torch.fx.GraphModule:
+    """Apply graph-based SAC to a traced fwd+loss+bwd graph.
+
+    Tags forward nodes with recompute policy via apply_sac_pass (backward
+    nodes are skipped automatically via the is_backward annotation), then
+    applies remat_using_tags_for_fwd_loss_bwd_graph to duplicate
+    PREFER_RECOMPUTE forward ops before backward and DCE originals.
+
+    The model must have been annotated with annotate_ac_regions before
+    tracing so that nodes have custom["ac_region_id"] metadata.
+    Backward nodes must be tagged with custom["remat_pass_tag"] (done by
+    _patch_engine_run_backward during tracing).
+    """
+    from torch._functorch._activation_checkpointing.remat_using_tags_for_fwd_loss_bwd_graph_pass import (
+        remat_using_tags_for_fwd_loss_bwd_graph,
+    )
+
+    apply_sac_pass(gm)
+    return remat_using_tags_for_fwd_loss_bwd_graph(gm)
 
 
 # Apply activation checkpointing on joint graph before partitioner
