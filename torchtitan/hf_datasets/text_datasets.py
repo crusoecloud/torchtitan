@@ -21,11 +21,61 @@ from torchtitan.config import JobConfig
 from torchtitan.hf_datasets import DatasetConfig
 from torchtitan.tools.logging import logger
 
-
 def _load_c4_dataset(dataset_path: str, split: str):
-    """Load C4 dataset with default configuration."""
-    return load_dataset(dataset_path, name="en", split=split, streaming=True)
+    if dataset_path and dataset_path.startswith("s3://"):
+          import gzip
+          import tempfile, os
+          import json as jsonlib
+          from urllib.parse import urlparse
+          from datasets import IterableDataset
 
+          parsed = urlparse(dataset_path)
+          bucket = parsed.netloc
+          prefix = parsed.path.lstrip("/")
+          split_name = "train" if split == "train" else "validation"
+          # Update to reflect URL of your Crusoe Cloud Object Storage region
+          endpoint_url = "https://object.us-east1-a.crusoecloudcompute.com"
+
+          def gen(bucket, prefix, split_name, endpoint_url):
+            import boto3
+            s3 = boto3.client("s3", endpoint_url=endpoint_url)
+            paginator = s3.get_paginator("list_objects_v2")
+
+            for page in paginator.paginate(Bucket=bucket, Prefix=f"{prefix}c4-{split_name}"):
+                for obj in page.get("Contents", []):
+                    if not obj["Key"].endswith(".json.gz"):
+                        continue
+                    fd, temp_path = tempfile.mkstemp(suffix=".json.gz")
+                    os.close(fd)
+
+                    try:
+                        logger.info(f"Downloading {obj['Key']} to local disk to avoid timeouts...")
+
+                        s3.download_file(Bucket=bucket, Key=obj["Key"], Filename=temp_path)
+
+                        logger.info(f"Processing local dataset file {temp_path}")
+                        with gzip.open(temp_path, "rt", encoding="utf-8") as f:
+                            for line in f:
+                                # logger.info("Data line: "+ line[:10]+" from file "+ obj["Key"])
+                                yield jsonlib.loads(line)
+
+                    finally:
+                        if os.path.exists(temp_path):
+                            logger.info(f"Cleaning up temporary file {temp_path}")
+                            os.remove(temp_path)
+
+          return IterableDataset.from_generator(
+              gen,
+              gen_kwargs={
+                  "bucket": bucket,
+                  "prefix": prefix,
+                  "split_name": split_name,
+                  "endpoint_url": endpoint_url,
+              },
+          )
+    else:
+      # HuggingFace Hub or local structured dataset
+      return load_dataset(dataset_path, split=split, streaming=True)
 
 def _process_c4_text(sample: dict[str, Any]) -> str:
     """Process C4 dataset sample text."""
@@ -116,6 +166,7 @@ class HuggingFaceTextDataset(IterableDataset, Stateful):
             for sample in self._get_data_iter():
                 # Use the dataset-specific text processor
                 sample_text = self._text_processor(sample)
+                # logger.info(f"[data sample] {sample_text[:100]!r}")
                 sample_tokens = self._tokenizer.encode(
                     sample_text, add_bos=True, add_eos=True
                 )
