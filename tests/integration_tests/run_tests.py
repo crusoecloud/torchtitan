@@ -116,7 +116,7 @@ def run_tests(args, test_list: list[OverrideDefinitions], module=None, config=No
 
             # test
             duration = time.perf_counter() - start
-            print(f"############ Duration for {test_flavor.test_name} test: {total_duration:.6f}s ############")
+            print(f"############ Duration for {test_flavor.test_name} test: {duration:.6f}s ############")
 
     # test
     total_duration = time.perf_counter() - total_start
