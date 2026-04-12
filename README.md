@@ -1,6 +1,7 @@
 # Running TorchTitan on Crusoe Cloud's Terraform SLURM Solution or Crusoe Managed Slurm #
 
-Forked from the TorchTitan repo (https://github.com/pytorch/torchtitan):
+Forked from the TorchTitan repo (https://github.com/pytorch/torchtitan).  
+Default branch is release-v0.2.2 which is the latest release that still supports the .toml config file method (easiest for our use case).
 
 *Torchtitan is a PyTorch native platform designed for rapid experimentation and large-scale training of generative AI models. As a minimal clean-room implementation of PyTorch native scaling techniques, torchtitan provides a flexible foundation for developers to build upon. With torchtitan extension points, one can easily create custom extensions tailored to specific needs.*
 
@@ -62,7 +63,10 @@ cd c4
 #this next step takes about an hour
 git lfs pull --include "en/*"
 ```
-Update the .toml training config file with * dataset_path = "/data/c4/" * in the \[training\] section
+Update the .toml training config files with * dataset_path = "/data/c4/" * in the \[training\] section
+
+** For testing with Crusoe Object Storage **
+Follow the steps above to create a local download of the C4 dataset tar.gz files, then copy those files into your Crusoe object storage bucket. Update dataset_path in the .toml training config files to be the bucket containing the files e.g s3://my-c4-bucket/. Also, update torchtitan/hf_datasets/test_datasets.py to change the S3 endpoint URL to match the correct object storage URL of the Crusoe Cloud region where you are testing (set to us-east1-a by default). S3 credentials and config are read from the standard location ~/.aws/credentials and ~/.aws/config.
 
 Run the job from the slurm login node: `sbatch multinode_trainer.sbatch`. Run `watch squeue` to see that the job is running - if it doesn’t go to `R` status it could be that you didn’t have sufficient nodes in `idle` state, or that you request resources that no node has (e.g too many GPU or CPU per node)
 
