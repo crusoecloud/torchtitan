@@ -75,7 +75,7 @@ def _load_c4_dataset(dataset_path: str, split: str):
           )
     else:
       # HuggingFace Hub or local structured dataset
-      return load_dataset(dataset_path, split=split, streaming=True)
+      return load_dataset(dataset_path, name="en", split=split, streaming=True)
 
 def _process_c4_text(sample: dict[str, Any]) -> str:
     """Process C4 dataset sample text."""
