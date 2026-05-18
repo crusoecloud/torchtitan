@@ -34,7 +34,7 @@ def _load_c4_dataset(dataset_path: str, split: str):
           prefix = parsed.path.lstrip("/")
           split_name = "train" if split == "train" else "validation"
           # Update to reflect URL of your Crusoe Cloud Object Storage region
-          endpoint_url = "https://object.us-east1-a.crusoecloudcompute.com"
+          endpoint_url = os.environ.get("S3_ENDPOINT_URL", "https://object.us-east1-a.crusoecloudcompute.com")
 
           def gen(bucket, prefix, split_name, endpoint_url):
             import boto3
