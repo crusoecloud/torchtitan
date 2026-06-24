@@ -49,9 +49,9 @@ python scripts/download_hf_assets.py --repo_id meta-llama/Llama-3.1-70B --assets
                                 
 ### Running the job ###
 
-1. Edit your chosen slurm fine (the 8B or 70B version) to have the 
+1. Edit your chosen multinode_trainer_llama3-*.slurm file (the 8B or 70B version) to set the correct number of nodes, topology file etc for your cluster. 
 
-** For quicker performance on repeated training runs: download C4 data set to cluster's /data volume **
+** For quicker performance on repeated training runs: download C4 data set to a shared volume on your cluster **
 ```
 cd /data
 curl -s https://packagecloud.io/install/repositories/github/git-lfs/script.deb.sh | sudo bash
