@@ -23,21 +23,20 @@ Other pre-requisites include:
 
 Please follow the setup for the specific GPU compute node types as shown below:
 
-1. Clone the torchtitan repository
+1. Clone the torchtitan repository and cd into the cloned directory
 
 ```
-git clone https://github.com/crusoecloud/torchtitan
+git clone --branch release-v0.2.2 --depth 1 https://github.com/crusoecloud/torchtitan.git
+cd torchtitan
 ```
 
-2. Create a Python virtual environment, activate, and install dependencies. **For GB200, create a Python virtual environment on one of the compute nodes (and not the login or head node)**
+2. Create and activate a Python virtual environment, then install dependencies. **For GB200, create a Python virtual environment on one of the compute nodes (and not the login or head node)**
 
 ```
 # install uv (uv is pre-installed on Crusoe Managed Slurm)
 uv venv
 source .venv/bin/activate
 uv pip install -r requirements.txt
-uv pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128 --force-reinstall # or cu130 for CUDA 13
-uv pip install --pre torchtitan --index-url https://download.pytorch.org/whl/nightly/cu128 # or cu130 for CUDA 13
 ```
 
 4. Download Llama 3.1 8B and 70B tokenizers from Huggingface
