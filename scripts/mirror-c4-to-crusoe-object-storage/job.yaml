@@ -1,0 +1,52 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mirror-c4-to-objectstorage
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: mirror
+        image: python:3.12-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          pip install --quiet huggingface_hub boto3 requests && \
+          python /scripts/script.py
+        env:
+        - name: S3_ENDPOINT_URL
+          value: "${S3_ENDPOINT_URL}"
+        - name: S3_BUCKET
+          value: "${S3_BUCKET}"
+        - name: AWS_ACCESS_KEY_ID
+          value: "${AWS_ACCESS_KEY_ID}"
+        - name: AWS_SECRET_ACCESS_KEY
+          value: "${AWS_SECRET_ACCESS_KEY}"
+        # Optional: HuggingFace token (only needed for gated datasets)
+        - name: HF_TOKEN
+          value: "${HF_TOKEN}"
+        - name: C4_SUBSET
+          value: "en/*"             # change to "en.noblocklist/*" etc. as needed
+        - name: S3_PREFIX
+          value: "c4"
+        - name: WORKERS
+          value: "8"
+        - name: CHUNK_SIZE_MB
+          value: "64"
+        volumeMounts:
+        - name: script
+          mountPath: /scripts
+        resources:
+          requests:
+            memory: "4Gi"
+            cpu: "4"
+          limits:
+            memory: "8Gi"
+            cpu: "8"
+      volumes:
+      - name: script
+        configMap:
+          name: mirror-c4-script

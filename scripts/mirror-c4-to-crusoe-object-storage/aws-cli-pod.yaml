@@ -1,0 +1,25 @@
+# populate the environment variables below
+# then kubectl apply -f aws-cli-pod.yaml
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: aws-cli-pod
+  labels:
+    app: aws-cli
+spec:
+  containers:
+  - name: aws-cli
+    image: amazon/aws-cli:latest
+    # Override the default entrypoint so the pod stays alive for exec
+    command: ["/bin/sh", "-c", "tail -f /dev/null"]
+    env:
+    - name: AWS_ACCESS_KEY_ID
+      value: ""
+    - name: AWS_SECRET_ACCESS_KEY
+      value: ""
+    - name: S3_ENDPOINT_URL
+      value: "https://object.eu-iceland1-a.crusoecloudcompute.com"
+    - name: BUCKET_NAME
+      value: "c4-bucket"
+  restartPolicy: Never
